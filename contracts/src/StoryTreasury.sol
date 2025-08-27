@@ -3,7 +3,6 @@ pragma solidity ^0.8.19;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/utils/Counters.sol";
 import "./StoryNFT.sol";
 
 /**
@@ -12,8 +11,6 @@ import "./StoryNFT.sol";
  * @notice This contract handles the distribution of funds from NFT sales and platform fees
  */
 contract StoryTreasury is Ownable, ReentrancyGuard {
-    using Counters for Counters.Counter;
-    
     // Events
     event RevenueReceived(
         uint256 indexed tokenId,
@@ -61,7 +58,7 @@ contract StoryTreasury is Ownable, ReentrancyGuard {
     }
     
     // State variables
-    Counters.Counter private _revenueIds;
+    uint256 private _nextRevenueId = 1;
     
     mapping(uint256 => RevenueShare) public revenueShares;
     mapping(address => UserRewards) public userRewards;
@@ -83,7 +80,7 @@ contract StoryTreasury is Ownable, ReentrancyGuard {
     
     // Modifiers
     modifier revenueExists(uint256 revenueId) {
-        require(_revenueIds.current() >= revenueId && revenueId > 0, "StoryTreasury: Revenue does not exist");
+        require(_nextRevenueId > revenueId && revenueId > 0, "StoryTreasury: Revenue does not exist");
         _;
     }
     
@@ -93,9 +90,9 @@ contract StoryTreasury is Ownable, ReentrancyGuard {
     }
     
     // Constructor
-    constructor(address _storyNFT) {
+    constructor(address _storyNFT) Ownable(msg.sender) {
         storyNFT = StoryNFT(_storyNFT);
-        _revenueIds.increment(); // Start from 1
+        // Revenue IDs start from 1
     }
     
     /**
@@ -111,8 +108,7 @@ contract StoryTreasury is Ownable, ReentrancyGuard {
     ) external payable nonReentrant {
         require(msg.value > 0, "StoryTreasury: Revenue amount must be positive");
         
-        uint256 revenueId = _revenueIds.current();
-        _revenueIds.increment();
+        uint256 revenueId = _nextRevenueId++;
         
         // Calculate platform fee
         uint256 platformFeeAmount = (msg.value * platformFee) / 10000;
@@ -218,7 +214,12 @@ contract StoryTreasury is Ownable, ReentrancyGuard {
     /**
      * @dev Get revenue share information
      * @param revenueId ID of the revenue
-     * @return RevenueShare struct with all revenue data
+     * @return authorShare Author's share amount
+     * @return voterShare Voter's share amount
+     * @return platformShare Platform's share amount
+     * @return totalAmount Total revenue amount
+     * @return distributed Whether distributed
+     * @return timestamp When received
      */
     function getRevenueShare(uint256 revenueId) external view revenueExists(revenueId) returns (
         uint256 authorShare,
@@ -253,7 +254,7 @@ contract StoryTreasury is Ownable, ReentrancyGuard {
      * @return Total revenue count
      */
     function getTotalRevenue() external view returns (uint256) {
-        return _revenueIds.current() - 1;
+        return _nextRevenueId - 1;
     }
     
     /**

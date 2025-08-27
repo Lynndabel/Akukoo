@@ -4,7 +4,6 @@ pragma solidity ^0.8.19;
 import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import "@openzeppelin/contracts/token/ERC721/extensions/ERC721URIStorage.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/utils/Counters.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /**
@@ -13,8 +12,6 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
  * @notice This contract handles the minting and management of story chapter NFTs
  */
 contract StoryNFT is ERC721, ERC721URIStorage, Ownable, ReentrancyGuard {
-    using Counters for Counters.Counter;
-    
     // Events
     event ChapterMinted(
         uint256 indexed tokenId,
@@ -54,8 +51,8 @@ contract StoryNFT is ERC721, ERC721URIStorage, Ownable, ReentrancyGuard {
     }
     
     // State variables
-    Counters.Counter private _tokenIds;
-    Counters.Counter private _storyIds;
+    uint256 private _nextTokenId = 1;
+    uint256 private _nextStoryId = 1;
     
     mapping(uint256 => Chapter) public chapters;
     mapping(uint256 => Story) public stories;
@@ -81,9 +78,8 @@ contract StoryNFT is ERC721, ERC721URIStorage, Ownable, ReentrancyGuard {
     }
     
     // Constructor
-    constructor() ERC721("Story Chapters", "STORY") {
-        _tokenIds.increment(); // Start from 1
-        _storyIds.increment(); // Start from 1
+    constructor() ERC721("Story Chapters", "STORY") Ownable(msg.sender) {
+        // IDs start from 1
     }
     
     /**
@@ -99,8 +95,7 @@ contract StoryNFT is ERC721, ERC721URIStorage, Ownable, ReentrancyGuard {
         require(bytes(title).length > 0, "StoryNFT: Title cannot be empty");
         require(bytes(description).length > 0, "StoryNFT: Description cannot be empty");
         
-        uint256 storyId = _storyIds.current();
-        _storyIds.increment();
+        uint256 storyId = _nextStoryId++;
         
         stories[storyId] = Story({
             creator: msg.sender,
@@ -122,13 +117,15 @@ contract StoryNFT is ERC721, ERC721URIStorage, Ownable, ReentrancyGuard {
      * @param contentHash IPFS hash of the chapter content
      * @param chapterNumber Chapter number in the story
      * @param metadataURI URI for the chapter metadata
+     * @param author Address of the chapter author
      * @return tokenId The ID of the minted NFT
      */
     function mintChapter(
         uint256 storyId,
         string memory contentHash,
         uint256 chapterNumber,
-        string memory metadataURI
+        string memory metadataURI,
+        address author
     ) external onlyAuthorizedMinter storyExists(storyId) nonReentrant returns (uint256) {
         require(bytes(contentHash).length > 0, "StoryNFT: Content hash cannot be empty");
         require(chapterNumber > 0, "StoryNFT: Chapter number must be positive");
@@ -141,13 +138,12 @@ contract StoryNFT is ERC721, ERC721URIStorage, Ownable, ReentrancyGuard {
             }
         }
         
-        uint256 tokenId = _tokenIds.current();
-        _tokenIds.increment();
+        uint256 tokenId = _nextTokenId++;
         
         chapters[tokenId] = Chapter({
             storyId: storyId,
             chapterNumber: chapterNumber,
-            author: msg.sender,
+            author: author,
             contentHash: contentHash,
             voteCount: 0,
             timestamp: block.timestamp,
@@ -159,10 +155,10 @@ contract StoryNFT is ERC721, ERC721URIStorage, Ownable, ReentrancyGuard {
         stories[storyId].totalChapters++;
         
         // Mint the NFT
-        _safeMint(msg.sender, tokenId);
+        _safeMint(author, tokenId);
         _setTokenURI(tokenId, metadataURI);
         
-        emit ChapterMinted(tokenId, storyId, msg.sender, chapterNumber, contentHash, block.timestamp);
+        emit ChapterMinted(tokenId, storyId, author, chapterNumber, contentHash, block.timestamp);
         
         return tokenId;
     }
@@ -209,7 +205,7 @@ contract StoryNFT is ERC721, ERC721URIStorage, Ownable, ReentrancyGuard {
      * @return Total story count
      */
     function getTotalStories() external view returns (uint256) {
-        return _storyIds.current() - 1;
+        return _nextStoryId - 1;
     }
     
     /**
@@ -217,7 +213,7 @@ contract StoryNFT is ERC721, ERC721URIStorage, Ownable, ReentrancyGuard {
      * @return Total chapter count
      */
     function getTotalChapters() external view returns (uint256) {
-        return _tokenIds.current() - 1;
+        return _nextTokenId - 1;
     }
     
     /**
@@ -229,16 +225,15 @@ contract StoryNFT is ERC721, ERC721URIStorage, Ownable, ReentrancyGuard {
         authorizedMinters[minter] = authorized;
     }
     
-    // Override required functions
-    function _burn(uint256 tokenId) internal override(ERC721, ERC721URIStorage) {
-        super._burn(tokenId);
+    // Note: In OpenZeppelin 5.x, many override functions are no longer needed
+    // The inheritance structure has been simplified
+    
+    // Required overrides for conflicting functions
+    function supportsInterface(bytes4 interfaceId) public view override(ERC721, ERC721URIStorage) returns (bool) {
+        return super.supportsInterface(interfaceId);
     }
     
     function tokenURI(uint256 tokenId) public view override(ERC721, ERC721URIStorage) returns (string memory) {
         return super.tokenURI(tokenId);
-    }
-    
-    function supportsInterface(bytes4 interfaceId) public view override(ERC721, ERC721URIStorage) returns (bool) {
-        return super.supportsInterface(interfaceId);
     }
 }

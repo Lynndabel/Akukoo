@@ -3,7 +3,6 @@ pragma solidity ^0.8.19;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/utils/Counters.sol";
 import "./StoryNFT.sol";
 
 /**
@@ -12,8 +11,6 @@ import "./StoryNFT.sol";
  * @notice This contract handles the democratic process of choosing story directions
  */
 contract PlotVoting is Ownable, ReentrancyGuard {
-    using Counters for Counters.Counter;
-    
     // Events
     event ProposalSubmitted(
         uint256 indexed proposalId,
@@ -44,6 +41,10 @@ contract PlotVoting is Ownable, ReentrancyGuard {
         address indexed author
     );
     
+    // Confidential voting events
+    event VoteCommitted(uint256 indexed proposalId, address indexed voter);
+    event VoteRevealed(uint256 indexed proposalId, address indexed voter, uint256 amount, uint256 totalVotes);
+    
     // Structs
     struct Proposal {
         uint256 storyId;
@@ -58,6 +59,15 @@ contract PlotVoting is Ownable, ReentrancyGuard {
         uint256 totalVoters;
         mapping(address => uint256) votes; // voter => vote amount
         mapping(address => bool) hasVoted; // voter => has voted
+        mapping(address => uint256) voterStakes; // voter => optional stake amount
+        address[] voterList; // list of voters to enable iteration for rewards/refunds
+        uint256 totalVoterStake; // aggregate optional stake from voters
+        // Confidential voting fields
+        bool confidential; // if true, use commit-reveal
+        uint256 commitDeadline; // end of commit phase
+        uint256 revealDeadline; // end of reveal phase
+        mapping(address => bytes32) voteCommitments; // voter => commitment
+        mapping(address => bool) hasRevealed; // voter => has revealed
     }
     
     struct VoteInfo {
@@ -66,7 +76,7 @@ contract PlotVoting is Ownable, ReentrancyGuard {
     }
     
     // State variables
-    Counters.Counter private _proposalIds;
+    uint256 private _nextProposalId = 1;
     
     mapping(uint256 => Proposal) public proposals;
     mapping(uint256 => uint256[]) public storyProposals; // storyId => array of proposalIds
@@ -75,13 +85,14 @@ contract PlotVoting is Ownable, ReentrancyGuard {
     uint256 public votingDuration = 7 days;
     uint256 public minimumStake = 0.01 ether;
     uint256 public minimumVotesToExecute = 10;
+    uint256 public minimumVoterStake = 0.001 ether; // Deprecated: voting is free; kept for backwards-compatibility
     
     // Contract references
     StoryNFT public storyNFT;
     
     // Modifiers
     modifier proposalExists(uint256 proposalId) {
-        require(_proposalIds.current() >= proposalId && proposalId > 0, "PlotVoting: Proposal does not exist");
+        require(_nextProposalId > proposalId && proposalId > 0, "PlotVoting: Proposal does not exist");
         _;
     }
     
@@ -98,9 +109,9 @@ contract PlotVoting is Ownable, ReentrancyGuard {
     }
     
     // Constructor
-    constructor(address _storyNFT) {
+    constructor(address _storyNFT) Ownable(msg.sender) {
         storyNFT = StoryNFT(_storyNFT);
-        _proposalIds.increment(); // Start from 1
+        // Proposal IDs start from 1
     }
     
     /**
@@ -120,8 +131,10 @@ contract PlotVoting is Ownable, ReentrancyGuard {
         require(bytes(contentHash).length > 0, "PlotVoting: Content hash cannot be empty");
         require(chapterNumber > 0, "PlotVoting: Chapter number must be positive");
         
-        uint256 proposalId = _proposalIds.current();
-        _proposalIds.increment();
+        // Check if user already submitted for this chapter
+        require(!_hasUserSubmittedForChapter(storyId, chapterNumber, msg.sender), "PlotVoting: User already submitted for this chapter");
+        
+        uint256 proposalId = _nextProposalId++;
         
         Proposal storage proposal = proposals[proposalId];
         proposal.storyId = storyId;
@@ -134,11 +147,37 @@ contract PlotVoting is Ownable, ReentrancyGuard {
         proposal.executed = false;
         proposal.rejected = false;
         proposal.totalVoters = 0;
+        proposal.confidential = false;
+        proposal.commitDeadline = 0;
+        proposal.revealDeadline = 0;
         
         // Add to story's proposal list
         storyProposals[storyId].push(proposalId);
         
         emit ProposalSubmitted(proposalId, msg.sender, storyId, contentHash, msg.value, proposal.deadline);
+    }
+
+    /**
+     * @dev Enable confidential voting (commit-reveal) for an existing proposal. Owner can call before current deadline.
+     * @param proposalId ID of the proposal
+     * @param commitDuration Duration of commit phase in seconds
+     * @param revealDuration Duration of reveal phase in seconds
+     */
+    function enableConfidentialVoting(uint256 proposalId, uint256 commitDuration, uint256 revealDuration)
+        external
+        onlyOwner
+        proposalExists(proposalId)
+    {
+        Proposal storage proposal = proposals[proposalId];
+        require(!proposal.executed && !proposal.rejected, "PlotVoting: Invalid state");
+        require(block.timestamp < proposal.deadline, "PlotVoting: Too late to enable");
+        require(!proposal.confidential, "PlotVoting: Already confidential");
+        require(commitDuration > 0 && revealDuration > 0, "PlotVoting: Durations must be > 0");
+
+        proposal.confidential = true;
+        proposal.commitDeadline = block.timestamp + commitDuration;
+        proposal.revealDeadline = proposal.commitDeadline + revealDuration;
+        proposal.deadline = proposal.revealDeadline; // extend overall deadline to reveal end
     }
     
     /**
@@ -146,19 +185,96 @@ contract PlotVoting is Ownable, ReentrancyGuard {
      * @param proposalId ID of the proposal to vote on
      * @param voteAmount Amount of tokens to vote with
      */
-    function vote(uint256 proposalId, uint256 voteAmount) external proposalExists(proposalId) proposalActive(proposalId) nonReentrant {
+    function vote(uint256 proposalId, uint256 voteAmount) external payable proposalExists(proposalId) proposalActive(proposalId) nonReentrant {
         require(voteAmount > 0, "PlotVoting: Vote amount must be positive");
-        require(!proposals[proposalId].hasVoted[msg.sender], "PlotVoting: Already voted");
-        
         Proposal storage proposal = proposals[proposalId];
+        require(!proposal.confidential, "PlotVoting: Confidential voting enabled - use commit/reveal");
+        require(!proposal.hasVoted[msg.sender], "PlotVoting: Already voted");
         
-        // Record the vote
+        // Record the vote with stake
         proposal.votes[msg.sender] = voteAmount;
         proposal.hasVoted[msg.sender] = true;
+        proposal.voterList.push(msg.sender);
         proposal.voteCount += voteAmount;
         proposal.totalVoters++;
+
+        // Optional ETH stake sent with vote
+        if (msg.value > 0) {
+            proposal.voterStakes[msg.sender] += msg.value;
+            proposal.totalVoterStake += msg.value;
+        }
         
         emit VoteCast(proposalId, msg.sender, voteAmount, proposal.voteCount);
+    }
+
+    /**
+     * @dev Commit a vote hash for confidential proposals during commit phase.
+     * Commitment should be keccak256(abi.encodePacked(voteAmount, salt, voter)).
+     */
+    function commitVote(uint256 proposalId, bytes32 commitment)
+        external
+        proposalExists(proposalId)
+        proposalActive(proposalId)
+        nonReentrant
+    {
+        Proposal storage proposal = proposals[proposalId];
+        require(proposal.confidential, "PlotVoting: Not confidential");
+        require(block.timestamp < proposal.commitDeadline, "PlotVoting: Commit phase ended");
+        require(proposal.voteCommitments[msg.sender] == bytes32(0), "PlotVoting: Already committed");
+
+        proposal.voteCommitments[msg.sender] = commitment;
+        // Mark as participant for accounting and potential refunds/rewards
+        if (!proposal.hasVoted[msg.sender]) {
+            proposal.hasVoted[msg.sender] = true;
+            proposal.voterList.push(msg.sender);
+            proposal.totalVoters++;
+        }
+        emit VoteCommitted(proposalId, msg.sender);
+    }
+
+    /**
+     * @dev Reveal a committed vote during reveal phase.
+     */
+    function revealVote(uint256 proposalId, uint256 voteAmount, bytes32 salt)
+        external
+        proposalExists(proposalId)
+        nonReentrant
+    {
+        Proposal storage proposal = proposals[proposalId];
+        require(proposal.confidential, "PlotVoting: Not confidential");
+        require(block.timestamp >= proposal.commitDeadline, "PlotVoting: Reveal not started");
+        require(block.timestamp < proposal.revealDeadline, "PlotVoting: Reveal phase ended");
+        require(!proposal.hasRevealed[msg.sender], "PlotVoting: Already revealed");
+        require(proposal.voteCommitments[msg.sender] != bytes32(0), "PlotVoting: No commitment");
+        require(voteAmount > 0, "PlotVoting: Invalid voteAmount");
+
+        bytes32 expected = keccak256(abi.encodePacked(voteAmount, salt, msg.sender));
+        require(expected == proposal.voteCommitments[msg.sender], "PlotVoting: Commitment mismatch");
+
+        proposal.votes[msg.sender] = voteAmount;
+        proposal.voteCount += voteAmount;
+        proposal.hasRevealed[msg.sender] = true;
+        emit VoteRevealed(proposalId, msg.sender, voteAmount, proposal.voteCount);
+    }
+
+    /**
+     * @dev Optionally stake ETH towards a proposal to be eligible for voter rewards if it wins
+     * @param proposalId ID of the proposal to stake on
+     */
+    function stakeForProposal(uint256 proposalId) external payable proposalExists(proposalId) proposalActive(proposalId) nonReentrant {
+        require(msg.value > 0, "PlotVoting: Stake amount must be positive");
+        Proposal storage proposal = proposals[proposalId];
+
+        // If this is the user's first interaction (no prior vote), register them as a voter for accounting
+        if (!proposal.hasVoted[msg.sender]) {
+            proposal.hasVoted[msg.sender] = true;
+            proposal.voterList.push(msg.sender);
+            proposal.totalVoters++;
+            // No change to voteCount since they didn't cast votes here
+        }
+
+        proposal.voterStakes[msg.sender] += msg.value;
+        proposal.totalVoterStake += msg.value;
     }
     
     /**
@@ -179,13 +295,14 @@ contract PlotVoting is Ownable, ReentrancyGuard {
             proposal.storyId,
             proposal.contentHash,
             proposal.chapterNumber,
-            "" // metadataURI will be set by the author later
+            "", // metadataURI will be set by the author later
+            proposal.author
         );
         
         // Update vote count in StoryNFT
         storyNFT.updateVoteCount(tokenId, proposal.voteCount);
         
-        // Distribute stake to voters
+        // Distribute stake to author and stakers for this winning proposal
         _distributeStakeToVoters(proposalId);
         
         emit ProposalExecuted(proposalId, proposal.storyId, proposal.author, tokenId);
@@ -206,13 +323,55 @@ contract PlotVoting is Ownable, ReentrancyGuard {
         // Return stake to author
         payable(proposal.author).transfer(proposal.stakeAmount);
         
+        // Refund all voter optional stakes
+        if (proposal.totalVoterStake > 0) {
+            for (uint256 i = 0; i < proposal.voterList.length; i++) {
+                address voter = proposal.voterList[i];
+                uint256 stakeAmt = proposal.voterStakes[voter];
+                if (stakeAmt > 0) {
+                    proposal.voterStakes[voter] = 0;
+                    payable(voter).transfer(stakeAmt);
+                }
+            }
+            proposal.totalVoterStake = 0;
+        }
+        
         emit ProposalRejected(proposalId, proposal.storyId, proposal.author);
+    }
+
+    /**
+     * @dev Returns privacy metadata for a proposal.
+     */
+    function getProposalPrivacy(uint256 proposalId) external view proposalExists(proposalId) returns (
+        bool confidential,
+        uint256 commitDeadline,
+        uint256 revealDeadline
+    ) {
+        Proposal storage p = proposals[proposalId];
+        return (p.confidential, p.commitDeadline, p.revealDeadline);
+    }
+
+    function hasCommitted(uint256 proposalId, address voter) external view proposalExists(proposalId) returns (bool) {
+        return proposals[proposalId].voteCommitments[voter] != bytes32(0);
+    }
+
+    function hasRevealed(uint256 proposalId, address voter) external view proposalExists(proposalId) returns (bool) {
+        return proposals[proposalId].hasRevealed[voter];
     }
     
     /**
      * @dev Get proposal information
      * @param proposalId ID of the proposal
-     * @return storyId, author, contentHash, chapterNumber, voteCount, stakeAmount, deadline, executed, rejected, totalVoters
+     * @return storyId Story ID
+     * @return author Author address
+     * @return contentHash Content hash
+     * @return chapterNumber Chapter number
+     * @return voteCount Vote count
+     * @return stakeAmount Stake amount
+     * @return deadline Deadline timestamp
+     * @return executed Whether executed
+     * @return rejected Whether rejected
+     * @return totalVoters Total voters count
      */
     function getProposal(uint256 proposalId) external view proposalExists(proposalId) returns (
         uint256 storyId,
@@ -254,8 +413,8 @@ contract PlotVoting is Ownable, ReentrancyGuard {
      * @dev Get total number of proposals
      * @return Total proposal count
      */
-    function getTotalProposals() external view returns (uint256) {
-        return _proposalIds.current() - 1;
+    function getTotalProposals() public view returns (uint256) {
+        return _nextProposalId - 1;
     }
     
     /**
@@ -279,6 +438,42 @@ contract PlotVoting is Ownable, ReentrancyGuard {
     }
     
     /**
+     * @dev Check if user has submitted for a specific chapter
+     * @param storyId ID of the story
+     * @param chapterNumber Chapter number
+     * @param user Address of the user
+     * @return Whether user has submitted
+     */
+    function hasUserSubmittedForChapter(uint256 storyId, uint256 chapterNumber, address user) external view returns (bool) {
+        return _hasUserSubmittedForChapter(storyId, chapterNumber, user);
+    }
+    
+    /**
+     * @dev Get user's active submissions
+     * @param user Address of the user
+     * @return Array of proposal IDs where user is author
+     */
+    function getUserSubmissions(address user) external view returns (uint256[] memory) {
+        uint256[] memory userProposals = new uint256[](getTotalProposals());
+        uint256 count = 0;
+        
+        for (uint256 i = 1; i <= getTotalProposals(); i++) {
+            if (proposals[i].author == user) {
+                userProposals[count] = i;
+                count++;
+            }
+        }
+        
+        // Resize array to actual count
+        uint256[] memory result = new uint256[](count);
+        for (uint256 i = 0; i < count; i++) {
+            result[i] = userProposals[i];
+        }
+        
+        return result;
+    }
+    
+    /**
      * @dev Update voting parameters (owner only)
      * @param _votingDuration New voting duration in seconds
      * @param _minimumStake New minimum stake amount
@@ -298,36 +493,85 @@ contract PlotVoting is Ownable, ReentrancyGuard {
     }
     
     /**
-     * @dev Distribute stake to voters based on their vote weight
+     * @dev Distribute stakes to voters and author based on voting results
      * @param proposalId ID of the proposal
      */
     function _distributeStakeToVoters(uint256 proposalId) internal {
         Proposal storage proposal = proposals[proposalId];
-        uint256 totalStake = proposal.stakeAmount;
-        uint256 totalVotes = proposal.voteCount;
+        uint256 totalAuthorStake = proposal.stakeAmount;
+        uint256 totalVoterStakes = _calculateTotalVoterStakes(proposalId);
+        uint256 totalStakes = totalAuthorStake + totalVoterStakes;
         
-        if (totalVotes == 0) {
-            // If no votes, return stake to author
-            payable(proposal.author).transfer(totalStake);
+        if (totalVoterStakes == 0) {
+            // If no votes, return all stakes to original owners
+            payable(proposal.author).transfer(totalAuthorStake);
             return;
         }
         
-        // Calculate author's share (20% of stake)
-        uint256 authorShare = (totalStake * 20) / 100;
+        // Calculate distribution percentages
+        uint256 authorShare = (totalStakes * 60) / 100; // 60% to author
+        uint256 voterShare = (totalStakes * 30) / 100;  // 30% to voters
+        uint256 platformShare = totalStakes - authorShare - voterShare; // 10% to platform
+        
+        // Pay author their share
         payable(proposal.author).transfer(authorShare);
         
-        // Distribute remaining stake to voters proportionally
-        uint256 remainingStake = totalStake - authorShare;
+        // Distribute voter share proportionally based on their stake contribution
+        _distributeVoterRewards(proposalId, voterShare);
         
-        for (uint256 i = 0; i < storyProposals[proposal.storyId].length; i++) {
-            uint256 currentProposalId = storyProposals[proposal.storyId][i];
-            Proposal storage currentProposal = proposals[currentProposalId];
-            
-            if (currentProposal.hasVoted[msg.sender]) {
-                uint256 voterShare = (remainingStake * currentProposal.votes[msg.sender]) / totalVotes;
-                payable(msg.sender).transfer(voterShare);
+        // Platform share remains in contract
+    }
+    
+    /**
+     * @dev Calculate total stakes from all voters for a proposal
+     * @param proposalId ID of the proposal
+     * @return Total voter stakes
+     */
+    function _calculateTotalVoterStakes(uint256 proposalId) internal view returns (uint256) {
+        Proposal storage proposal = proposals[proposalId];
+        return proposal.totalVoterStake;
+    }
+    
+    /**
+     * @dev Distribute voter rewards proportionally
+     * @param proposalId ID of the proposal
+     * @param totalReward Total reward amount to distribute
+     */
+    function _distributeVoterRewards(uint256 proposalId, uint256 totalReward) internal {
+        Proposal storage proposal = proposals[proposalId];
+        uint256 totalStakes = proposal.totalVoterStake;
+        if (totalStakes == 0 || totalReward == 0) return;
+
+        // Iterate over voter list and distribute proportionally to stake
+        for (uint256 i = 0; i < proposal.voterList.length; i++) {
+            address voter = proposal.voterList[i];
+            uint256 stakeAmt = proposal.voterStakes[voter];
+            if (stakeAmt == 0) continue; // only stakers share rewards
+            uint256 reward = (totalReward * stakeAmt) / totalStakes;
+            if (reward > 0) {
+                payable(voter).transfer(reward);
             }
         }
+    }
+    
+    /**
+     * @dev Check if user already submitted for a specific chapter
+     * @param storyId ID of the story
+     * @param chapterNumber Chapter number
+     * @param user Address of the user
+     * @return Whether user already submitted
+     */
+    function _hasUserSubmittedForChapter(uint256 storyId, uint256 chapterNumber, address user) internal view returns (bool) {
+        uint256[] storage storyProposalIds = storyProposals[storyId];
+        for (uint256 i = 0; i < storyProposalIds.length; i++) {
+            if (storyProposalIds[i] > 0) {
+                Proposal storage proposal = proposals[storyProposalIds[i]];
+                if (proposal.author == user && proposal.chapterNumber == chapterNumber) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
     
     /**

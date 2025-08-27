@@ -3,8 +3,7 @@ pragma solidity ^0.8.19;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/utils/Counters.sol";
-import "@openzeppelin/contracts/security/Pausable.sol";
+import "@openzeppelin/contracts/utils/Pausable.sol";
 
 /**
  * @title ReputationStaking
@@ -12,8 +11,6 @@ import "@openzeppelin/contracts/security/Pausable.sol";
  * @notice This contract handles reputation tracking, staking, and slashing
  */
 contract ReputationStaking is Ownable, ReentrancyGuard, Pausable {
-    using Counters for Counters.Counter;
-    
     // Events
     event ReputationStaked(
         uint256 indexed commitmentId,
@@ -86,7 +83,7 @@ contract ReputationStaking is Ownable, ReentrancyGuard, Pausable {
     }
     
     // State variables
-    Counters.Counter private _commitmentIds;
+    uint256 private _nextCommitmentId = 1;
     
     mapping(uint256 => Stake) public stakes;
     mapping(uint256 => Commitment) public commitments;
@@ -111,7 +108,7 @@ contract ReputationStaking is Ownable, ReentrancyGuard, Pausable {
     
     // Modifiers
     modifier commitmentExists(uint256 commitmentId) {
-        require(_commitmentIds.current() >= commitmentId && commitmentId > 0, "ReputationStaking: Commitment does not exist");
+        require(_nextCommitmentId > commitmentId && commitmentId > 0, "ReputationStaking: Commitment does not exist");
         _;
     }
     
@@ -128,8 +125,8 @@ contract ReputationStaking is Ownable, ReentrancyGuard, Pausable {
     }
     
     // Constructor
-    constructor() {
-        _commitmentIds.increment(); // Start from 1
+    constructor() Ownable(msg.sender) {
+        // Commitment IDs start from 1
     }
     
     /**
@@ -146,8 +143,7 @@ contract ReputationStaking is Ownable, ReentrancyGuard, Pausable {
         require(bytes(commitmentType).length > 0, "ReputationStaking: Commitment type cannot be empty");
         require(duration >= 1 && duration <= 3, "ReputationStaking: Invalid duration type");
         
-        uint256 commitmentId = _commitmentIds.current();
-        _commitmentIds.increment();
+        uint256 commitmentId = _nextCommitmentId++;
         
         // Calculate commitment parameters based on duration
         uint256 commitmentDuration;
@@ -190,6 +186,9 @@ contract ReputationStaking is Ownable, ReentrancyGuard, Pausable {
         
         // Update user reputation
         UserReputation storage reputation = userReputations[msg.sender];
+        if (reputation.reputationScore == 0) {
+            reputation.reputationScore = baseReputationScore; // Initialize to base score
+        }
         reputation.totalStaked += msg.value;
         reputation.currentStaked += msg.value;
         reputation.totalCommitments++;
@@ -205,7 +204,7 @@ contract ReputationStaking is Ownable, ReentrancyGuard, Pausable {
      * @dev Complete a commitment successfully
      * @param commitmentId ID of the commitment to complete
      */
-    function completeCommitment(uint256 commitmentId) external commitmentExists(commitmentId) commitmentDeadlinePassed nonReentrant {
+    function completeCommitment(uint256 commitmentId) external commitmentExists(commitmentId) commitmentDeadlinePassed(commitmentId) nonReentrant {
         Commitment storage commitment = commitments[commitmentId];
         require(msg.sender == commitment.user, "ReputationStaking: Only commitment owner can complete");
         require(!commitment.completed, "ReputationStaking: Commitment already completed");
@@ -225,8 +224,16 @@ contract ReputationStaking is Ownable, ReentrancyGuard, Pausable {
         reputation.reputationScore += _calculateReputationGain(commitmentId);
         reputation.lastUpdated = block.timestamp;
         
-        // Transfer reward
-        payable(msg.sender).transfer(rewardAmount);
+        // Transfer payout: prefer full reward if contract has funds; otherwise, ensure at least principal is paid
+        uint256 payout = rewardAmount;
+        uint256 balance = address(this).balance;
+        if (balance < payout) {
+            // Fallback to paying at least the principal to avoid revert due to insufficient funds
+            payout = commitment.stakeAmount <= balance ? commitment.stakeAmount : balance;
+        }
+        if (payout > 0) {
+            payable(msg.sender).transfer(payout);
+        }
         
         emit CommitmentCompleted(commitmentId, msg.sender, rewardAmount, block.timestamp);
         emit ReputationScoreUpdated(msg.sender, reputation.reputationScore - _calculateReputationGain(commitmentId), reputation.reputationScore, block.timestamp);
@@ -236,7 +243,7 @@ contract ReputationStaking is Ownable, ReentrancyGuard, Pausable {
      * @dev Mark a commitment as failed
      * @param commitmentId ID of the commitment to mark as failed
      */
-    function failCommitment(uint256 commitmentId) external commitmentExists(commitmentId) commitmentDeadlinePassed nonReentrant {
+    function failCommitment(uint256 commitmentId) external commitmentExists(commitmentId) commitmentDeadlinePassed(commitmentId) nonReentrant {
         Commitment storage commitment = commitments[commitmentId];
         require(msg.sender == commitment.user, "ReputationStaking: Only commitment owner can fail");
         require(!commitment.completed, "ReputationStaking: Commitment already completed");
@@ -308,7 +315,13 @@ contract ReputationStaking is Ownable, ReentrancyGuard, Pausable {
     /**
      * @dev Get user's reputation information
      * @param user Address of the user
-     * @return UserReputation struct with all reputation data
+     * @return totalStaked Total amount staked
+     * @return currentStaked Currently staked amount
+     * @return reputationScore Reputation score
+     * @return totalCommitments Total commitments count
+     * @return successfulCommitments Successful commitments count
+     * @return failedCommitments Failed commitments count
+     * @return lastUpdated Last update timestamp
      */
     function getUserReputation(address user) external view returns (
         uint256 totalStaked,
@@ -334,7 +347,14 @@ contract ReputationStaking is Ownable, ReentrancyGuard, Pausable {
     /**
      * @dev Get commitment information
      * @param commitmentId ID of the commitment
-     * @return Commitment struct with all commitment data
+     * @return id Commitment ID
+     * @return user User address
+     * @return stakeAmount Stake amount
+     * @return deadline Deadline timestamp
+     * @return commitmentType Commitment type
+     * @return completed Whether completed
+     * @return failed Whether failed
+     * @return rewardMultiplier Reward multiplier
      */
     function getCommitment(uint256 commitmentId) external view commitmentExists(commitmentId) returns (
         uint256 id,
@@ -373,7 +393,7 @@ contract ReputationStaking is Ownable, ReentrancyGuard, Pausable {
      * @return Total commitment count
      */
     function getTotalCommitments() external view returns (uint256) {
-        return _commitmentIds.current() - 1;
+        return _nextCommitmentId - 1;
     }
     
     /**

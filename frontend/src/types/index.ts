@@ -78,3 +78,4 @@ export interface ReputationCommitment {
 
 export type Network = 'ethereum' | 'polygon' | 'sepolia' | 'mumbai'
 export type WalletStatus = 'disconnected' | 'connecting' | 'connected' | 'error'
+

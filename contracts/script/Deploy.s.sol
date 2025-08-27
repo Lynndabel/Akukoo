@@ -29,31 +29,31 @@ contract Deploy is Script {
         // Start broadcasting transactions
         vm.startBroadcast();
         
-        console.log("🚀 Starting deployment of On-Chain Story Game contracts...");
+        console.log("Starting deployment of On-Chain Story Game contracts...");
         console.log("Deployer address:", deployer);
         
         // Deploy StoryNFT first (base contract)
-        console.log("\n📚 Deploying StoryNFT...");
+        console.log("\nDeploying StoryNFT...");
         storyNFT = new StoryNFT();
         console.log("StoryNFT deployed at:", address(storyNFT));
         
         // Deploy PlotVoting with StoryNFT reference
-        console.log("\n🗳️ Deploying PlotVoting...");
+        console.log("\nDeploying PlotVoting...");
         plotVoting = new PlotVoting(address(storyNFT));
         console.log("PlotVoting deployed at:", address(plotVoting));
         
         // Deploy StoryTreasury with StoryNFT reference
-        console.log("\n💰 Deploying StoryTreasury...");
+        console.log("\nDeploying StoryTreasury...");
         storyTreasury = new StoryTreasury(address(storyNFT));
         console.log("StoryTreasury deployed at:", address(storyTreasury));
         
         // Deploy ReputationStaking
-        console.log("\n⭐ Deploying ReputationStaking...");
+        console.log("\nDeploying ReputationStaking...");
         reputationStaking = new ReputationStaking();
         console.log("ReputationStaking deployed at:", address(reputationStaking));
         
         // Configure contracts
-        console.log("\n⚙️ Configuring contracts...");
+        console.log("\nConfiguring contracts...");
         
         // Set PlotVoting as authorized minter for StoryNFT
         storyNFT.setAuthorizedMinter(address(plotVoting), true);
@@ -74,7 +74,7 @@ contract Deploy is Script {
         vm.stopBroadcast();
         
         // Deployment summary
-        console.log("\n🎉 Deployment completed successfully!");
+        console.log("\nDeployment completed successfully!");
         console.log("==========================================");
         console.log("Contract Addresses:");
         console.log("StoryNFT:", address(storyNFT));
