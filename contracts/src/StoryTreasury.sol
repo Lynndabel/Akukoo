@@ -8,7 +8,7 @@ import "./StoryNFT.sol";
 /**
  * @title StoryTreasury
  * @dev Manages revenue distribution and financial operations for the story platform
- * @notice This contract handles the distribution of funds from NFT sales and platform fees
+ * @notice This contract handles the distribution of funds from NFT sales and platform fees 
  */
 contract StoryTreasury is Ownable, ReentrancyGuard {
     // Events

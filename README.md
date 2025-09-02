@@ -448,3 +448,61 @@ This is a collaborative project! Each completed task brings us closer to launchi
 ---
 
 *Let's build something amazing together! 🚀*
+
+---
+
+## Somnia Testnet Integration (DAO Election Mode)
+
+This repo now supports deploying and running voting on Somnia Testnet with allowlist-based eligibility for DAO/community elections.
+
+- __Chain__
+  - RPC: `https://dream-rpc.somnia.network`
+  - Chain ID: `50312`
+  - Symbol: `STT`
+  - Explorer: `https://testnet.somnia.network`
+
+- __Contracts__ (`contracts/`)
+  - `foundry.toml` includes:
+    - `[rpc_endpoints] somnia = "https://dream-rpc.somnia.network"`
+  - `PlotVoting.sol` adds:
+    - Election mode and allowlist eligibility per proposal
+    - Admin: `setElectionMode(proposalId, enabled)`
+    - Admin: `setEligibleVoters(proposalId, address[] voters, bool allowed)`
+    - Events: `ElectionModeUpdated`, `EligibilityUpdated`
+
+- __Deploy to Somnia Testnet__
+  1) Fund deployer with STT.
+  2) Build contracts:
+     - `forge build`
+  3) Optional (confirm deployer address from your private key):
+     - `cast wallet address --private-key $PRIVATE_KEY`
+  4) Dry run (no broadcast):
+     - `forge script script/Deploy.s.sol --rpc-url somnia -vvvv`
+     - or explicitly: `forge script script/Deploy.s.sol --rpc-url somnia --sig "run()" -vvvv`
+  5) Broadcast (real deploy):
+     - `forge script script/Deploy.s.sol --rpc-url somnia --broadcast --private-key $PRIVATE_KEY -vvvv`
+     - You can omit `--sender`; it is derived from `--private-key`.
+  6) Record deployed addresses printed by the script.
+
+### Environment setup (Bash)
+
+```bash
+# Required for deployment
+export PRIVATE_KEY=0xYOUR_PRIVATE_KEY   # keep this secret!
+
+# Frontend
+echo "NEXT_PUBLIC_SOMNIA_RPC_URL=https://dream-rpc.somnia.network" >> frontend/.env.local
+echo "NEXT_PUBLIC_PLOTVOTING_ADDRESS_SOMNIA=0xYourDeployedPlotVoting" >> frontend/.env.local
+```
+
+- __Frontend__ (`frontend/`)
+  - Chain config added in `src/lib/web3.ts` using `defineChain` with id `50312`.
+  - Env vars (.env.local):
+    - `NEXT_PUBLIC_SOMNIA_RPC_URL=https://dream-rpc.somnia.network`
+    - `NEXT_PUBLIC_PLOTVOTING_ADDRESS_SOMNIA=0xYourDeployedPlotVoting`
+  - Contract address selection prefers Somnia-specific envs.
+
+- __Using Election Mode__
+  - Enable: `setElectionMode(proposalId, true)`
+  - Allowlist voters: `setEligibleVoters(proposalId, [0x...], true)`
+  - Voting will reject non-eligible addresses for `vote`, `commitVote`, `revealVote`.

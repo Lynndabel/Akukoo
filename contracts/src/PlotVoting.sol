@@ -8,7 +8,7 @@ import "./StoryNFT.sol";
 /**
  * @title PlotVoting
  * @dev Manages chapter proposals and voting for story chapters
- * @notice This contract handles the democratic process of choosing story directions
+ * @notice This contract handles the democratic process of choosing story directionss
  */
 contract PlotVoting is Ownable, ReentrancyGuard {
     // Events
@@ -44,6 +44,9 @@ contract PlotVoting is Ownable, ReentrancyGuard {
     // Confidential voting events
     event VoteCommitted(uint256 indexed proposalId, address indexed voter);
     event VoteRevealed(uint256 indexed proposalId, address indexed voter, uint256 amount, uint256 totalVotes);
+    // Eligibility / DAO mode events
+    event ElectionModeUpdated(uint256 indexed proposalId, bool enabled);
+    event EligibilityUpdated(uint256 indexed proposalId, address indexed voter, bool allowed);
     
     // Structs
     struct Proposal {
@@ -68,6 +71,10 @@ contract PlotVoting is Ownable, ReentrancyGuard {
         uint256 revealDeadline; // end of reveal phase
         mapping(address => bytes32) voteCommitments; // voter => commitment
         mapping(address => bool) hasRevealed; // voter => has revealed
+        // DAO Election mode + eligibility
+        bool electionMode; // if true, apply eligibility checks and (optionally) stricter rules
+        bool eligibilityEnabled; // if true, only addresses explicitly allowed can participate
+        mapping(address => bool) eligibleVoters; // voter => is eligible
     }
     
     struct VoteInfo {
@@ -150,6 +157,8 @@ contract PlotVoting is Ownable, ReentrancyGuard {
         proposal.confidential = false;
         proposal.commitDeadline = 0;
         proposal.revealDeadline = 0;
+        proposal.electionMode = false;
+        proposal.eligibilityEnabled = false;
         
         // Add to story's proposal list
         storyProposals[storyId].push(proposalId);
@@ -189,6 +198,7 @@ contract PlotVoting is Ownable, ReentrancyGuard {
         require(voteAmount > 0, "PlotVoting: Vote amount must be positive");
         Proposal storage proposal = proposals[proposalId];
         require(!proposal.confidential, "PlotVoting: Confidential voting enabled - use commit/reveal");
+        require(_isEligible(proposalId, msg.sender), "PlotVoting: Not eligible to vote");
         require(!proposal.hasVoted[msg.sender], "PlotVoting: Already voted");
         
         // Record the vote with stake
@@ -220,6 +230,7 @@ contract PlotVoting is Ownable, ReentrancyGuard {
         Proposal storage proposal = proposals[proposalId];
         require(proposal.confidential, "PlotVoting: Not confidential");
         require(block.timestamp < proposal.commitDeadline, "PlotVoting: Commit phase ended");
+        require(_isEligible(proposalId, msg.sender), "PlotVoting: Not eligible to vote");
         require(proposal.voteCommitments[msg.sender] == bytes32(0), "PlotVoting: Already committed");
 
         proposal.voteCommitments[msg.sender] = commitment;
@@ -244,6 +255,7 @@ contract PlotVoting is Ownable, ReentrancyGuard {
         require(proposal.confidential, "PlotVoting: Not confidential");
         require(block.timestamp >= proposal.commitDeadline, "PlotVoting: Reveal not started");
         require(block.timestamp < proposal.revealDeadline, "PlotVoting: Reveal phase ended");
+        require(_isEligible(proposalId, msg.sender), "PlotVoting: Not eligible to vote");
         require(!proposal.hasRevealed[msg.sender], "PlotVoting: Already revealed");
         require(proposal.voteCommitments[msg.sender] != bytes32(0), "PlotVoting: No commitment");
         require(voteAmount > 0, "PlotVoting: Invalid voteAmount");
@@ -349,6 +361,17 @@ contract PlotVoting is Ownable, ReentrancyGuard {
     ) {
         Proposal storage p = proposals[proposalId];
         return (p.confidential, p.commitDeadline, p.revealDeadline);
+    }
+
+    /**
+     * @dev Returns election/eligibility metadata for a proposal.
+     */
+    function getProposalEligibility(uint256 proposalId) external view proposalExists(proposalId) returns (
+        bool electionMode,
+        bool eligibilityEnabled
+    ) {
+        Proposal storage p = proposals[proposalId];
+        return (p.electionMode, p.eligibilityEnabled);
     }
 
     function hasCommitted(uint256 proposalId, address voter) external view proposalExists(proposalId) returns (bool) {
@@ -490,6 +513,60 @@ contract PlotVoting is Ownable, ReentrancyGuard {
         votingDuration = _votingDuration;
         minimumStake = _minimumStake;
         minimumVotesToExecute = _minimumVotesToExecute;
+    }
+
+    /**
+     * @dev Enable or disable election mode for a proposal (owner only).
+     * When enabled, eligibility rules are enforced for participation.
+     */
+    function setElectionMode(uint256 proposalId, bool enabled)
+        external
+        onlyOwner
+        proposalExists(proposalId)
+    {
+        Proposal storage proposal = proposals[proposalId];
+        require(!proposal.executed && !proposal.rejected, "PlotVoting: Invalid state");
+        proposal.electionMode = enabled;
+        emit ElectionModeUpdated(proposalId, enabled);
+    }
+
+    /**
+     * @dev Batch set eligibility for voters on a proposal (owner only).
+     * Setting any voter toggles eligibilityEnabled=true.
+     */
+    function setEligibleVoters(uint256 proposalId, address[] calldata voters, bool allowed)
+        external
+        onlyOwner
+        proposalExists(proposalId)
+    {
+        Proposal storage proposal = proposals[proposalId];
+        require(!proposal.executed && !proposal.rejected, "PlotVoting: Invalid state");
+        proposal.eligibilityEnabled = true;
+        for (uint256 i = 0; i < voters.length; i++) {
+            address v = voters[i];
+            proposal.eligibleVoters[v] = allowed;
+            emit EligibilityUpdated(proposalId, v, allowed);
+        }
+    }
+
+    /**
+     * @dev Check if an address is eligible to participate in a proposal.
+     */
+    function isEligible(uint256 proposalId, address voter) external view proposalExists(proposalId) returns (bool) {
+        return _isEligible(proposalId, voter);
+    }
+
+    function _isEligible(uint256 proposalId, address voter) internal view returns (bool) {
+        Proposal storage p = proposals[proposalId];
+        if (!(p.electionMode || p.eligibilityEnabled)) {
+            // If neither election mode nor eligibility is enabled, allow open voting
+            return true;
+        }
+        if (!p.eligibilityEnabled) {
+            // Election mode without explicit list means open eligibility
+            return true;
+        }
+        return p.eligibleVoters[voter];
     }
     
     /**
