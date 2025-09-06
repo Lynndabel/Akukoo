@@ -3,7 +3,8 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { FaBookOpen, FaPencilAlt, FaRocket, FaSave } from 'react-icons/fa'
-import { useWallet } from '@/hooks/useWallet'
+import { useAccount } from 'wagmi'
+import { useStoryNFT } from '@/hooks/useStoryNFT'
 import { useAppStore } from '@/store'
 
 const genres = [
@@ -13,8 +14,9 @@ const genres = [
 
 export default function CreatePage() {
   const router = useRouter()
-  const { isConnected } = useWallet()
+  const { isConnected } = useAccount()
   const { setLoading, setError } = useAppStore()
+  const { createStory, isCreating, error } = useStoryNFT()
   
   const [formData, setFormData] = useState({
     title: '',
@@ -25,11 +27,7 @@ export default function CreatePage() {
   })
   const [isSubmitting, setIsSubmitting] = useState(false)
 
-  // Redirect if not connected
-  if (!isConnected) {
-    router.push('/')
-    return null
-  }
+  // If not connected, keep the page visible but disable the submit and show a hint.
 
   const handleGenreToggle = (genre: string) => {
     setFormData(prev => ({
@@ -48,15 +46,18 @@ export default function CreatePage() {
       return
     }
 
+    if (!isConnected) {
+      setError('Please connect your wallet to create a story')
+      return
+    }
+
     setIsSubmitting(true)
     setLoading(true)
 
     try {
-      // TODO: Submit to smart contract
-      // await createStory(formData)
-      
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 2000))
+      // Write to StoryNFT on-chain (use initialChapter if provided, else use description)
+      const ok = await createStory(formData.title, formData.initialChapter || formData.description)
+      if (!ok) throw new Error(error || 'Transaction failed')
       
       // Redirect to the new story
       router.push('/stories')
@@ -219,10 +220,10 @@ export default function CreatePage() {
 
                 <button
                   type="submit"
-                  disabled={isSubmitting || formData.genre.length === 0 || formData.genre.length > 3}
+                  disabled={isSubmitting || isCreating || !isConnected || formData.genre.length === 0 || formData.genre.length > 3}
                   className="w-full flex items-center justify-center space-x-2 px-8 py-4 bg-gradient-to-r from-primary to-secondary text-white font-semibold text-lg rounded-xl hover:from-primary/90 hover:to-secondary/90 transition-all duration-200 transform hover:scale-105 shadow-lg hover:shadow-xl disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
                 >
-                  {isSubmitting ? (
+                  {isSubmitting || isCreating ? (
                     <>
                       <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
                       <span>Creating Story...</span>
@@ -234,6 +235,9 @@ export default function CreatePage() {
                     </>
                   )}
                 </button>
+                {!isConnected && (
+                  <p className="text-center text-sm text-muted-foreground">Connect your wallet to create a story.</p>
+                )}
               </div>
             </div>
           </form>

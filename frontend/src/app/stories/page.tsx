@@ -1,118 +1,60 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import Link from 'next/link'
-import { FaBookOpen, FaSearch, FaFilter, FaEye, FaVoteYea, FaClock, FaUser, FaTag } from 'react-icons/fa'
-import { useAppStore } from '@/store'
-import type { Story } from '@/types'
+import { FaBookOpen, FaSearch, FaFilter, FaEye, FaVoteYea, FaClock, FaUser } from 'react-icons/fa'
+import { useStoryNFT } from '@/hooks/useStoryNFT'
 
-// Sample stories data (replace with real data from your contracts)
-const sampleStories: Story[] = [
-  {
-    id: 1,
-    title: 'The Quantum Chronicles',
-    description: 'A sci-fi epic where humanity discovers parallel dimensions through quantum technology.',
-    author: '0x7a8b9c...',
-    coverImage: '/api/placeholder/400/300',
-    genre: ['Science Fiction', 'Adventure'],
-    totalChapters: 12,
-    isCompleted: false,
-    createdAt: Date.now() - 86400000 * 30, // 30 days ago
-    updatedAt: Date.now() - 86400000, // 1 day ago
-    readerCount: 15420,
-    voteCount: 8920
-  },
-  {
-    id: 2,
-    title: 'Ethereal Realms',
-    description: 'A fantasy tale of magic, dragons, and the eternal battle between light and darkness.',
-    author: '0x3f4e5d...',
-    coverImage: '/api/placeholder/400/300',
-    genre: ['Fantasy', 'Magic'],
-    totalChapters: 8,
-    isCompleted: true,
-    createdAt: Date.now() - 86400000 * 60, // 60 days ago
-    updatedAt: Date.now() - 172800000, // 2 days ago
-    readerCount: 23450,
-    voteCount: 15670
-  },
-  {
-    id: 3,
-    title: 'Cyberpunk 2077: Origins',
-    description: 'The untold story of how Night City became the technological marvel it is today.',
-    author: '0x1a2b3c...',
-    coverImage: '/api/placeholder/400/300',
-    genre: ['Cyberpunk', 'Thriller'],
-    totalChapters: 15,
-    isCompleted: false,
-    createdAt: Date.now() - 86400000 * 45, // 45 days ago
-    updatedAt: Date.now() - 43200000, // 12 hours ago
-    readerCount: 18930,
-    voteCount: 11240
-  },
-  {
-    id: 4,
-    title: 'The Last Colony',
-    description: 'Humanity\'s final attempt to establish a new home among the stars.',
-    author: '0x9d8e7f...',
-    coverImage: '/api/placeholder/400/300',
-    genre: ['Science Fiction', 'Drama'],
-    totalChapters: 6,
-    isCompleted: false,
-    createdAt: Date.now() - 86400000 * 20, // 20 days ago
-    updatedAt: Date.now() - 86400000 * 3, // 3 days ago
-    readerCount: 8760,
-    voteCount: 5430
-  },
-  {
-    id: 5,
-    title: 'Mystic Academy',
-    description: 'A school for young mages where ancient secrets and modern challenges collide.',
-    author: '0x5c4d3e...',
-    coverImage: '/api/placeholder/400/300',
-    genre: ['Fantasy', 'Young Adult'],
-    totalChapters: 10,
-    isCompleted: false,
-    createdAt: Date.now() - 86400000 * 15, // 15 days ago
-    updatedAt: Date.now() - 86400000 * 2, // 2 days ago
-    readerCount: 12340,
-    voteCount: 7890
-  },
-  {
-    id: 6,
-    title: 'Neon Dreams',
-    description: 'In a world where dreams can be shared, one person discovers a dark conspiracy.',
-    author: '0x2f1e0d...',
-    coverImage: '/api/placeholder/400/300',
-    genre: ['Cyberpunk', 'Mystery'],
-    totalChapters: 7,
-    isCompleted: true,
-    createdAt: Date.now() - 86400000 * 90, // 90 days ago
-    updatedAt: Date.now() - 86400000 * 7, // 7 days ago
-    readerCount: 9870,
-    voteCount: 6540
-  }
-]
+type UiStory = {
+  id: number
+  title: string
+  description: string
+  author: string
+  coverImage?: string
+  genre: string[]
+  totalChapters: number
+  isCompleted: boolean
+  createdAt: number
+  updatedAt: number
+  readerCount: number
+  voteCount: number
+}
 
 const genres = ['All', 'Science Fiction', 'Fantasy', 'Cyberpunk', 'Mystery', 'Adventure', 'Drama', 'Thriller', 'Young Adult', 'Magic']
 
 export default function StoriesPage() {
-  const [stories, setStories] = useState<Story[]>(sampleStories)
-  const [filteredStories, setFilteredStories] = useState<Story[]>(sampleStories)
+  const { stories, loading } = useStoryNFT()
+  const mappedStories: UiStory[] = useMemo(() => {
+    return (stories || []).map(s => ({
+      id: Number(s.id),
+      title: s.title,
+      description: s.content,
+      author: s.author,
+      coverImage: '/api/placeholder/400/300',
+      genre: [],
+      totalChapters: 0,
+      isCompleted: false,
+      createdAt: Number(s.timestamp) * 1000 || Date.now(),
+      updatedAt: Number(s.timestamp) * 1000 || Date.now(),
+      readerCount: 0,
+      voteCount: 0,
+    }))
+  }, [stories])
+
+  const [filteredStories, setFilteredStories] = useState<UiStory[]>([])
   const [searchTerm, setSearchTerm] = useState('')
   const [selectedGenre, setSelectedGenre] = useState('All')
   const [sortBy, setSortBy] = useState<'newest' | 'popular' | 'recent'>('newest')
   const [showFilters, setShowFilters] = useState(false)
 
-  // Load stories from store (when connected to contracts)
+  // Initialize filtered stories when mappedStories changes
   useEffect(() => {
-    // TODO: Load stories from smart contracts
-    setStories(sampleStories)
-  }, [])
+    setFilteredStories(mappedStories)
+  }, [mappedStories])
 
   // Filter and sort stories
   useEffect(() => {
-    let filtered = stories.filter(story => {
+    let filtered = mappedStories.filter(story => {
       const matchesSearch = story.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
                            story.description.toLowerCase().includes(searchTerm.toLowerCase())
       const matchesGenre = selectedGenre === 'All' || story.genre.includes(selectedGenre)
@@ -133,7 +75,7 @@ export default function StoriesPage() {
     }
 
     setFilteredStories(filtered)
-  }, [stories, searchTerm, selectedGenre, sortBy])
+  }, [mappedStories, searchTerm, selectedGenre, sortBy])
 
   const formatDate = (timestamp: number) => {
     const now = Date.now()
@@ -226,7 +168,10 @@ export default function StoriesPage() {
 
         {/* Stories Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-          {filteredStories.map((story) => (
+          {loading && (
+            <div className="md:col-span-2 lg:col-span-3 text-center text-muted-foreground">Loading stories from chain…</div>
+          )}
+          {!loading && filteredStories.map((story) => (
             <div
               key={story.id}
               className="group bg-background rounded-2xl border border-border overflow-hidden hover:border-primary/50 transition-all duration-300 hover:shadow-xl hover:-translate-y-2"

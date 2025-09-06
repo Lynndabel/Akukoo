@@ -1,115 +1,116 @@
-'use client'
+'use client';
 
-import { useState } from 'react'
-import { useWallet } from '@/hooks/useWallet'
-import { cn } from '@/lib/utils'
-import { FaWallet, FaChevronDown, FaMask, FaMobile } from 'react-icons/fa'
+import { useEffect, useRef, useState } from 'react';
+import { useAccount, useDisconnect, useSwitchChain, useConnect } from 'wagmi';
+import { liskSepolia } from 'wagmi/chains';
+import { toast } from 'react-hot-toast';
 
 export function ConnectWalletButton() {
-  const [isOpen, setIsOpen] = useState(false)
-  const { connectors, connectWallet, isPending } = useWallet()
+  const { isConnected, address, chain } = useAccount();
+  const { disconnect } = useDisconnect();
+  const { switchChain } = useSwitchChain();
+  const { connect, connectors } = useConnect();
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const popoverRef = useRef<HTMLDivElement | null>(null);
+  
+  const walletConnectConnector = connectors.find(c => c.id === 'walletConnect');
 
-  // Debug connectors
-  console.log('ConnectWalletButton - Available connectors:', connectors)
 
-  const handleConnect = async (connectorId: string) => {
-    // Find the connector by ID
-    const connector = connectors.find(c => c.id === connectorId)
-    console.log('Attempting to connect with:', connector)
-    if (connector) {
-      await connectWallet(connectorId)
-      setIsOpen(false)
+  // Close account menu on outside click
+  useEffect(() => {
+    function onDocClick(e: MouseEvent) {
+      if (menuOpen && popoverRef.current && !popoverRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
     }
-  }
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, [menuOpen]);
 
-  const getConnectorIcon = (name: string) => {
-    if (name.toLowerCase().includes('metamask')) return <FaMask className="h-4 w-4" />
-    if (name.toLowerCase().includes('walletconnect')) return <FaMobile className="h-4 w-4" />
-    return <FaWallet className="h-4 w-4" />
+  // Auto switch to Lisk after successful connect
+  useEffect(() => {
+    if (!isConnected) return;
+    if (chain?.id !== liskSepolia.id) {
+      try { 
+        switchChain({ chainId: liskSepolia.id }); 
+      } catch (error) {
+        console.error('Failed to switch to Lisk Sepolia:', error);
+      }
+    }
+  }, [isConnected, chain?.id, switchChain]);
+
+  if (isConnected && address) {
+    return (
+      <div className="relative" ref={popoverRef}>
+        <button
+          onClick={() => setMenuOpen(v => !v)}
+          className="px-3 py-1 rounded bg-emerald-600 text-white text-sm hover:bg-emerald-700"
+        >
+          {address.slice(0, 6)}...{address.slice(-4)}{chain ? ` · ${chain.name}` : ''}
+        </button>
+        {menuOpen && (
+          <div className="absolute right-0 mt-2 w-44 rounded-md border border-neutral-700 bg-neutral-900 shadow-lg z-50">
+            <button
+              onClick={() => { setMenuOpen(false); disconnect(); }}
+              className="w-full text-left px-3 py-2 text-sm hover:bg-neutral-800"
+            >
+              Disconnect
+            </button>
+            <button
+              onClick={() => { setMenuOpen(false); try { switchChain({ chainId: liskSepolia.id }); } catch {} }}
+              className="w-full text-left px-3 py-2 text-sm hover:bg-neutral-800"
+            >
+              Switch to Lisk Sepolia
+            </button>
+          </div>
+        )}
+      </div>
+    );
   }
 
   return (
-    <div className="relative">
+    <div className="relative" ref={popoverRef}>
       <button
-        onClick={() => setIsOpen(!isOpen)}
-        disabled={isPending}
-        className={cn(
-          "flex items-center space-x-2 px-4 py-2 rounded-lg font-medium transition-all duration-200",
-          "bg-primary text-primary-foreground hover:bg-primary/90",
-          "disabled:opacity-50 disabled:cursor-not-allowed",
-          "focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2"
-        )}
+        onClick={async () => {
+          if (isConnected) {
+            setMenuOpen(!menuOpen);
+          } else if (walletConnectConnector) {
+            try {
+              setIsConnecting(true);
+              connect({ connector: walletConnectConnector });
+            } catch (error) {
+              console.error('Failed to connect wallet:', error);
+              toast.error('Failed to connect wallet');
+            } finally {
+              setIsConnecting(false);
+            }
+          }
+        }}
+        className="px-4 py-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90"
+        aria-haspopup="dialog"
+        disabled={isConnecting}
       >
-        <FaWallet className="h-4 w-4" />
-        <span>{isPending ? 'Connecting...' : 'Connect Wallet'}</span>
-        <FaChevronDown className={cn("h-3 w-3 transition-transform", isOpen && "rotate-180")} />
+        {isConnected ? 
+          `${address?.substring(0, 6)}...${address?.substring(address.length - 4)}` : 
+          isConnecting ? 'Connecting...' : 'Connect Wallet'}
       </button>
-
-      {isOpen && (
-        <>
-          {/* Backdrop */}
-          <div 
-            className="fixed inset-0 z-40" 
-            onClick={() => setIsOpen(false)}
-          />
-          
-          {/* Dropdown */}
-          <div className="absolute right-0 top-full mt-2 w-64 rounded-lg border border-border bg-background shadow-lg z-50">
-            <div className="p-4">
-              <h3 className="text-sm font-medium text-muted-foreground mb-3">
-                Choose your wallet
-              </h3>
-              
-              <div className="space-y-2">
-                {connectors.length === 0 ? (
-                  <div className="text-center py-4 text-sm text-muted-foreground">
-                    No wallets available
-                  </div>
-                ) : (
-                  connectors.map((connector) => (
-                    <button
-                      key={connector.id}
-                      onClick={() => handleConnect(connector.id)}
-                      disabled={!connector.ready || isPending}
-                      className={cn(
-                        "w-full flex items-center space-x-3 px-3 py-2 rounded-md text-left transition-colors",
-                        "hover:bg-accent hover:text-accent-foreground",
-                        "disabled:opacity-50 disabled:cursor-not-allowed",
-                        "focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2"
-                      )}
-                    >
-                      {getConnectorIcon(connector.name)}
-                      <span className="text-sm font-medium">
-                        {connector.name}
-                      </span>
-                      {!connector.ready && (
-                        <span className="text-xs text-muted-foreground ml-auto">
-                          (Unavailable)
-                        </span>
-                      )}
-                    </button>
-                  ))
-                )}
-              </div>
-              
-              <div className="mt-4 pt-3 border-t border-border">
-                <p className="text-xs text-muted-foreground text-center">
-                  New to Web3?{' '}
-                  <a 
-                    href="https://ethereum.org/en/wallets/" 
-                    target="_blank" 
-                    rel="noopener noreferrer"
-                    className="text-primary hover:underline"
-                  >
-                    Learn more about wallets
-                  </a>
-                </p>
-              </div>
-            </div>
-          </div>
-        </>
+      
+      {menuOpen && isConnected && (
+        <div className="absolute right-0 mt-2 w-48 rounded-md bg-white dark:bg-gray-800 shadow-lg py-1 z-50">
+          <button
+            onClick={() => {
+              disconnect();
+              setMenuOpen(false);
+            }}
+            className="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700"
+          >
+            Disconnect
+          </button>
+        </div>
       )}
     </div>
-  )
+  );
 }
+
 

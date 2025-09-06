@@ -4,12 +4,13 @@ import { useMemo, useState } from 'react'
 import { FaVoteYea } from 'react-icons/fa'
 import { usePlotVoting } from '@/hooks/usePlotVoting'
 import { useProposals } from '@/hooks/useProposals'
-import { useChainId } from 'wagmi'
+import { useChainId, useAccount } from 'wagmi'
 import toast from 'react-hot-toast'
 import { formatEther } from 'viem'
 
 export default function VotingPage() {
-  const { isConnected, vote, stakeForProposal, executeProposal, rejectProposal, tx } = usePlotVoting()
+  const { isConnected } = useAccount()
+  const { actions, hash, isPending, isConfirming, isConfirmed, lastAction, error } = usePlotVoting()
   const chainId = useChainId()
   const [storyFilter, setStoryFilter] = useState<string>('')
   const [page, setPage] = useState<number>(1)
@@ -20,6 +21,10 @@ export default function VotingPage() {
   const [proposalId, setProposalId] = useState<string>('')
   const [voteAmount, setVoteAmount] = useState<string>('1')
   const [stakeEth, setStakeEth] = useState<string>('0.1')
+  // Chapter submission / voting
+  const [storyId, setStoryId] = useState<string>('')
+  const [chapterId, setChapterId] = useState<string>('')
+  const [chapterContent, setChapterContent] = useState<string>('')
 
   const parsedProposalId = (() => {
     try { return BigInt(proposalId || '0') } catch { return 0n }
@@ -27,6 +32,8 @@ export default function VotingPage() {
   const parsedVoteAmount = (() => {
     try { return BigInt(voteAmount || '0') } catch { return 0n }
   })()
+  const parsedStoryIdForChapter = (() => { try { return storyId ? BigInt(storyId) : 0n } catch { return 0n } })()
+  const parsedChapterId = (() => { try { return chapterId ? BigInt(chapterId) : 0n } catch { return 0n } })()
 
   const getErrorMessage = (e: unknown) => {
     if (typeof e === 'object' && e !== null && 'message' in e) {
@@ -36,7 +43,34 @@ export default function VotingPage() {
     return 'Transaction failed'
   }
 
-  const disabled = !isConnected || !parsedProposalId || tx.isPending || tx.isConfirming
+  const onSubmitChapter = async () => {
+    if (!parsedStoryIdForChapter) return toast.error('Enter a valid Story ID')
+    if (!chapterContent || chapterContent.trim().length < 3) return toast.error('Enter chapter content')
+    try {
+      const p = toast.loading('Submitting chapter…')
+      await actions.submitChapter(parsedStoryIdForChapter, chapterContent.trim())
+      toast.dismiss(p)
+      toast.success('Chapter submitted')
+      setChapterContent('')
+    } catch (e: unknown) {
+      toast.error(getErrorMessage(e))
+    }
+  }
+
+  const onVoteForChapter = async () => {
+    if (!parsedStoryIdForChapter) return toast.error('Enter a valid Story ID')
+    if (!parsedChapterId) return toast.error('Enter a valid Chapter ID')
+    try {
+      const p = toast.loading('Voting for chapter…')
+      await actions.voteForChapter(parsedStoryIdForChapter, parsedChapterId)
+      toast.dismiss(p)
+      toast.success('Voted for chapter')
+    } catch (e: unknown) {
+      toast.error(getErrorMessage(e))
+    }
+  }
+
+  const disabled = !isConnected || !parsedProposalId || isPending || isConfirming
 
   const explorerBase = useMemo(() => {
     switch (chainId) {
@@ -53,7 +87,7 @@ export default function VotingPage() {
     if (parsedVoteAmount <= 0n) return toast.error('Vote amount must be greater than 0')
     try {
       const p = toast.loading('Submitting vote…')
-      await vote(parsedProposalId, parsedVoteAmount)
+      await actions.vote(parsedProposalId, parsedVoteAmount)
       toast.dismiss(p)
       toast.success('Vote submitted')
     } catch (e: unknown) {
@@ -62,35 +96,18 @@ export default function VotingPage() {
   }
 
   const onStake = async () => {
-    if (!parsedProposalId) return toast.error('Enter a valid Proposal ID')
-    if (!stakeEth || Number(stakeEth) <= 0) return toast.error('Stake must be > 0')
-    try {
-      const p = toast.loading('Submitting stake…')
-      await stakeForProposal(parsedProposalId, stakeEth)
-      toast.dismiss(p)
-      toast.success('Stake submitted')
-    } catch (e: unknown) {
-      toast.error(getErrorMessage(e))
-    }
+    toast.error('Staking flow not wired yet in this UI')
   }
 
   const onExecute = async () => {
-    if (!parsedProposalId) return toast.error('Enter a valid Proposal ID')
-    try {
-      const p = toast.loading('Executing proposal…')
-      await executeProposal(parsedProposalId)
-      toast.dismiss(p)
-      toast.success('Proposal executed')
-    } catch (e: unknown) {
-      toast.error(getErrorMessage(e))
-    }
+    toast.error('Execute not available in this build')
   }
 
   const onReject = async () => {
     if (!parsedProposalId) return toast.error('Enter a valid Proposal ID')
     try {
       const p = toast.loading('Rejecting proposal…')
-      await rejectProposal(parsedProposalId)
+      await actions.rejectProposal(parsedProposalId)
       toast.dismiss(p)
       toast.success('Proposal rejected')
     } catch (e: unknown) {
@@ -192,14 +209,67 @@ export default function VotingPage() {
               </div>
             </div>
 
+            {/* Chapter Submission & Voting */}
+            <div className="border-t border-border pt-6 mt-6">
+              <h3 className="font-medium mb-4">Chapters</h3>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm text-muted-foreground mb-1">Story ID</label>
+                  <input
+                    type="number"
+                    className="w-full rounded-md border border-border bg-transparent px-3 py-2"
+                    placeholder="e.g. 1"
+                    value={storyId}
+                    onChange={(e) => setStoryId(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-muted-foreground mb-1">Chapter ID (for voting)</label>
+                  <input
+                    type="number"
+                    className="w-full rounded-md border border-border bg-transparent px-3 py-2"
+                    placeholder="e.g. 0"
+                    value={chapterId}
+                    onChange={(e) => setChapterId(e.target.value)}
+                    min={0}
+                  />
+                </div>
+                <div className="sm:col-span-2">
+                  <label className="block text-sm text-muted-foreground mb-1">Chapter Content</label>
+                  <textarea
+                    className="w-full rounded-md border border-border bg-transparent px-3 py-2"
+                    placeholder="Write a new chapter proposal…"
+                    rows={4}
+                    value={chapterContent}
+                    onChange={(e) => setChapterContent(e.target.value)}
+                  />
+                </div>
+                <div className="flex items-end gap-3 sm:col-span-2">
+                  <button
+                    className="w-full sm:w-auto rounded-md bg-primary px-4 py-2 text-white disabled:opacity-50"
+                    disabled={!isConnected || !parsedStoryIdForChapter || isPending || isConfirming}
+                    onClick={onSubmitChapter}
+                  >
+                    Submit Chapter
+                  </button>
+                  <button
+                    className="w-full sm:w-auto rounded-md bg-secondary px-4 py-2 text-white disabled:opacity-50"
+                    disabled={!isConnected || !parsedStoryIdForChapter || !parsedChapterId || isPending || isConfirming}
+                    onClick={onVoteForChapter}
+                  >
+                    Vote for Chapter
+                  </button>
+                </div>
+              </div>
+            </div>
+
             <div className="text-sm text-muted-foreground space-y-1">
-              {tx.hash && <div>Tx: <a className="underline" target="_blank" rel="noreferrer" href={`${explorerBase}/tx/${tx.hash}`}>{tx.hash}</a></div>}
-              {tx.lastAction && <div>Last action: {tx.lastAction}</div>}
-              {tx.isPending && <div>Submitting transaction…</div>}
-              {tx.isConfirming && <div>Waiting for confirmation…</div>}
-              {tx.isConfirmed && <div className="text-emerald-500">Confirmed ✅</div>}
-              {tx.writeError && <div className="text-rose-500">Error: {String(tx.writeError.message || tx.writeError)}</div>}
-              {tx.confirmError && <div className="text-rose-500">Confirm Error: {String(tx.confirmError.message || tx.confirmError)}</div>}
+              {hash && <div>Tx: <a className="underline" target="_blank" rel="noreferrer" href={`${explorerBase}/tx/${hash}`}>{hash}</a></div>}
+              {lastAction && <div>Last action: {lastAction}</div>}
+              {isPending && <div>Submitting transaction…</div>}
+              {isConfirming && <div>Waiting for confirmation…</div>}
+              {isConfirmed && <div className="text-emerald-500">Confirmed ✅</div>}
+              {error && <div className="text-rose-500">Error: {String(error)}</div>}
               {!isConnected && <div>Please connect your wallet to interact.</div>}
             </div>
           </div>

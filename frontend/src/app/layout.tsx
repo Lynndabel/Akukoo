@@ -5,6 +5,7 @@ import { Header } from "@/components/layout/Header";
 import { Providers } from "@/components/providers/Providers";
 import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
 import { Toaster } from "react-hot-toast";
+import { NetworkBanner } from "@/components/network/NetworkBanner";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -34,6 +35,7 @@ export default function RootLayout({
         <ErrorBoundary>
           <Providers>
             <div className="min-h-screen flex flex-col">
+              <NetworkBanner />
               <Header />
               <main className="flex-1">
                 {children}
