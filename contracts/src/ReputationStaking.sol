@@ -8,7 +8,7 @@ import "@openzeppelin/contracts/utils/Pausable.sol";
 /**
  * @title ReputationStaking
  * @dev Manages user reputation scores and staking mechanisms
- * @notice This contract handles reputation tracking, staking, and slashing
+ * @notice This contract handles reputation tracking, staking, and slashing 
  */
 contract ReputationStaking is Ownable, ReentrancyGuard, Pausable {
     // Events

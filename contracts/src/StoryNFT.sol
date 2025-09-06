@@ -9,7 +9,7 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 /**
  * @title StoryNFT
  * @dev ERC721 implementation for story chapters with metadata management
- * @notice This contract handles the minting and management of story chapter NFTs
+ * @notice This contract handles the minting and management of story chapter NFTs 
  */
 contract StoryNFT is ERC721, ERC721URIStorage, Ownable, ReentrancyGuard {
     // Events
